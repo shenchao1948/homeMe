@@ -600,13 +600,9 @@ class AiServer
                 echo "📤 [流式发送] status={$status}, content_len={$contentLen}, conn_id={$connection->id}\n";
             }
             
-            $connection->send($json);
+            // 【关键修复】直接写入 socket，绕过 Workerman 的发送缓冲区
+            $connection->send($json, true);
             
-            // 【关键修复】强制刷新输出缓冲（如果存在）
-            if (function_exists('ob_flush') && function_exists('flush')) {
-                @ob_flush();
-                @flush();
-            }
         } catch (\JsonException $e) {
             echo "JSON编码错误: " . $e->getMessage() . "\n";
             echo "原始数据: " . print_r($data, true) . "\n";

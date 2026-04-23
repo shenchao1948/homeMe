@@ -193,16 +193,24 @@ function handleSystemMessage(messageData) {
 
 // 处理聊天消息
 function handleChatMessage(messageData) {
+    console.log('📨 [DEBUG] 收到聊天消息:', messageData);
+    
     // 如果是AI消息，直接显示
     if (messageData.is_ai) {
+        console.log('🤖 [DEBUG] AI消息, isStreaming:', messageData.isStreaming, ', status:', messageData.status);
+        
         // 处理流式输出
         if (messageData.isStreaming) {
             if (messageData.status === 'start') {
+                console.log('💭 [DEBUG] 收到AI开始响应信号，准备显示思考提示');
+                
                 // AI开始响应，创建显示"AI正在努力思考..."的消息气泡
-                // 【修复】确保每次都会创建新的思考提示气泡
                 clearThinkingMessage(); // 先清除可能存在的旧思考提示
+                
+                // 【关键修复】强制创建新的思考提示气泡
                 appendMessageToChat('bot', 'AI正在努力思考...', false, true, true);
-                console.log('🤖 [DEBUG] 显示AI思考提示');
+                
+                console.log('✅ [DEBUG] 思考提示已显示');
             } else if (messageData.status === 'streaming') {
                 // 流式输出中，将内容加入打字机队列
                 if (messageData.content && messageData.content.length > 0) {
@@ -217,10 +225,10 @@ function handleChatMessage(messageData) {
                 }
             } else if (messageData.status === 'end') {
                 // AI响应结束
+                console.log('✅ [DEBUG] AI响应结束');
                 handleSendMessageSuccess();
                 // 重置标志
                 state.hasReceivedFirstChunk = false;
-                console.log('✅ [DEBUG] AI响应结束，重置标志');
             }
         } else {
             // 非流式AI消息，直接显示
@@ -237,9 +245,11 @@ function handleChatMessage(messageData) {
     if (messageData.sender_id === state.userToken) {
         // 如果有连接ID且与当前连接相同，说明是自己发的，不显示
         if (messageData.sender_connection_id === state.connectionId) {
+            console.log('🔇 [DEBUG] 忽略自己发送的用户消息');
             return;
         }
         // 否则是其他浏览器发的，应该显示
+        console.log('👥 [DEBUG] 显示其他客户端的用户消息');
     }
     
     // 显示其他用户的消息或同一用户其他浏览器的消息
@@ -421,6 +431,14 @@ function debounce(func, wait) {
 function appendMessageToChat(sender, content, isStreaming = false, createNewBubble = false, isThinking = false) {
     const chatBox = $('#chatMessages');
     
+    console.log('💬 [DEBUG] appendMessageToChat 调用:', {
+        sender,
+        content: content.substring(0, 50),
+        isStreaming,
+        createNewBubble,
+        isThinking
+    });
+    
     // 如果是流式输出且是bot消息，追加到最后一条bot消息
     if (isStreaming && sender === 'bot' && !createNewBubble) {
         const lastBotMessage = chatBox.find('.justify-start').last();
@@ -466,6 +484,8 @@ function appendMessageToChat(sender, content, isStreaming = false, createNewBubb
     
     chatBox.append(messageElement);
     chatBox.scrollTop(chatBox.get(0).scrollHeight);
+    
+    console.log('✅ [DEBUG] 消息气泡已添加到DOM');
 }
 
 // HTML转义，防止XSS攻击
@@ -540,8 +560,9 @@ function sendMessage() {
     // 保存最后一条用户消息（用于重试）
     state.lastUserMessage = message;
     
-    // 【修复】发送消息前重置标志，确保下次AI响应能显示思考提示
+    // 【关键修复】发送消息前重置标志，确保下次AI响应能显示思考提示
     state.hasReceivedFirstChunk = false;
+    console.log('🔄 [DEBUG] 重置 hasReceivedFirstChunk 标志');
     
     // 显示用户消息
     appendMessageToChat('user', message);
@@ -566,17 +587,27 @@ function sendMessage() {
     
     // 发送消息
     try {
+        console.log('📤 [DEBUG] 发送AI对话消息:', chatMessage);
         state.ws.send(JSON.stringify(chatMessage));
-        console.log('📤 [DEBUG] 消息已发送，等待AI响应...');
+        console.log('⏳ [DEBUG] 消息已发送，等待AI start 信号...');
+        
+        // 【新增】设置超时检测，如果5秒内没有收到start信号，显示提示
+        setTimeout(() => {
+            if (state.isSending && !state.hasReceivedFirstChunk) {
+                console.warn('⚠️ [DEBUG] 5秒内未收到AI响应，可能网络延迟');
+            }
+        }, 5000);
         
         // 设置超时保护，防止服务器无响应导致按钮一直禁用
         setTimeout(() => {
             if (state.isSending) {
+                console.warn('⚠️ [DEBUG] 30秒超时，强制重置发送状态');
                 handleSendMessageSuccess();
             }
         }, 30000); // 30秒超时（AI响应可能较慢）
         
     } catch (e) {
+        console.error('❌ [DEBUG] 发送消息异常:', e);
         handleSendMessageError("发送失败: " + e.message);
     }
 }
@@ -808,6 +839,8 @@ function clearThinkingMessage() {
         if (currentText.includes('思考') || currentText.includes('努力')) {
             console.log('🧹 [DEBUG] 清除思考提示，当前内容:', currentText);
             contentElement.empty();
+        } else {
+            console.log('ℹ️ [DEBUG] 最后一条bot消息不是思考提示，内容:', currentText.substring(0, 30));
         }
     } else {
         console.warn('⚠️ [DEBUG] 未找到bot消息气泡，无法清除思考提示');

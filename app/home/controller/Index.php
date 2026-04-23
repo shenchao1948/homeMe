@@ -35,13 +35,15 @@ class Index
         $history = RoomCommons::where('user_id', $userId)
             ->order('create_time', 'desc')
             ->limit($limit)
+            ->field('message_type,content,create_time')
             ->select()
+            ->order("id","asc")
             ->toArray();
         
         return json([
             'code' => 200,
             'msg' => 'success',
-            'data' => array_reverse($history)
+            'data' => $history
         ]);
     }
     

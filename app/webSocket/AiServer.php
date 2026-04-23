@@ -387,60 +387,93 @@ class AiServer
         $fullResponse = '';
         $chunkCount = 0;
         $startTime = microtime(true);
+        
+        // 【关键修复】使用队列和定时器实现真正的异步流式推送
+        $streamQueue = [];
+        $isProcessing = false;
+        $aiCompleted = false;
+        $timerId = null;
 
         echo "🤖 [AI开始] 用户: {$userToken}, 消息长度: " . mb_strlen($message, 'UTF-8') . "\n";
 
-        $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use ($userToken, $roomId, &$fullResponse, &$chunkCount, $startTime) {
-            $fullResponse .= $chunk;
-            $chunkCount++;
-            
-            $elapsed = round(microtime(true) - $startTime, 2);
-            
-            // 【调试日志】记录每个chunk的接收时间和内容
-            if ($chunkCount <= 3 || $chunkCount % 5 === 0) {
-                echo "📨 [AI Chunk #{$chunkCount}] [{$elapsed}s] 长度: " . mb_strlen($chunk, 'UTF-8') . ", 内容预览: " . mb_substr($chunk, 0, 30) . "\n";
+        // 启动定时器处理队列（每10ms检查一次）
+        $timerId = Timer::add(0.01, function() use (&$streamQueue, &$isProcessing, $userToken, $roomId, &$chunkCount, $startTime, &$fullResponse, &$aiCompleted, &$timerId, $connection, $message) {
+            if (empty($streamQueue) && $aiCompleted) {
+                // 队列清空且AI已完成，停止定时器
+                Timer::del($timerId);
+                
+                $totalTime = round(microtime(true) - $startTime, 2);
+                echo "✅ [AI完成] 总chunk数: {$chunkCount}, 总长度: " . mb_strlen($fullResponse, 'UTF-8') . ", 耗时: {$totalTime}s\n";
+                
+                // 发送结束信号
+                $this->sendToAllUserConnections($userToken, [
+                    'type' => 'chat',
+                    'data' => [
+                        'isStreaming' => false,
+                        'content' => '',
+                        'timestamp' => time(),
+                        'room_id' => $roomId,
+                        'sender_id' => 'ai',
+                        'is_ai' => true,
+                        'status' => 'end',
+                        'full_content' => $fullResponse
+                    ]
+                ]);
+                
+                // 保存历史记录
+                $this->saveChatHistory($userToken, $message, $fullResponse, $roomId);
+                $this->updateUserChatCount($userToken);
+                
+                return;
             }
             
-            $sendData = [
-                'type' => 'chat',
-                'data' => [
-                    'isStreaming' => true,
-                    'content' => $chunk,
-                    'timestamp' => time(),
-                    'room_id' => $roomId,
-                    'sender_id' => 'ai',
-                    'is_ai' => true,
-                    'status' => 'streaming'
-                ]
-            ];
-            
-            $this->sendToAllUserConnections($userToken, $sendData);
+            if (!empty($streamQueue) && !$isProcessing) {
+                $isProcessing = true;
+                $chunk = array_shift($streamQueue);
+                
+                if ($chunk !== null && $chunk !== '') {
+                    $fullResponse .= $chunk;
+                    $chunkCount++;
+                    
+                    $elapsed = round(microtime(true) - $startTime, 2);
+                    
+                    if ($chunkCount <= 3 || $chunkCount % 5 === 0) {
+                        echo "📨 [AI Chunk #{$chunkCount}] [{$elapsed}s] 长度: " . mb_strlen($chunk, 'UTF-8') . "\n";
+                    }
+                    
+                    $this->sendToAllUserConnections($userToken, [
+                        'type' => 'chat',
+                        'data' => [
+                            'isStreaming' => true,
+                            'content' => $chunk,
+                            'timestamp' => time(),
+                            'room_id' => $roomId,
+                            'sender_id' => 'ai',
+                            'is_ai' => true,
+                            'status' => 'streaming'
+                        ]
+                    ]);
+                }
+                
+                $isProcessing = false;
+            }
         });
 
-        $totalTime = round(microtime(true) - $startTime, 2);
+        // 在后台执行AI请求（仍然是阻塞的，但定时器会同时运行）
+        $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use (&$streamQueue) {
+            // 将chunk加入队列，由定时器异步发送
+            if (!empty($chunk)) {
+                $streamQueue[] = $chunk;
+            }
+        });
         
-        // 【调试日志】记录总chunk数和总响应时间
-        echo "✅ [AI完成] 总chunk数: {$chunkCount}, 总长度: " . mb_strlen($fullResponse, 'UTF-8') . ", 耗时: {$totalTime}s\n";
+        // 标记AI已完成
+        $aiCompleted = true;
 
-        // 发送结束信号
-        $this->sendToAllUserConnections($userToken, [
-            'type' => 'chat',
-            'data' => [
-                'isStreaming' => false,
-                'content' => '',
-                'timestamp' => time(),
-                'room_id' => $roomId,
-                'sender_id' => 'ai',
-                'is_ai' => true,
-                'status' => 'end',
-                'full_content' => $fullResponse
-            ]
-        ]);
-
-        if ($success) {
-            $this->saveChatHistory($userToken, $message, $fullResponse, $roomId);
-            $this->updateUserChatCount($userToken);
-        } else {
+        if (!$success) {
+            if ($timerId) {
+                Timer::del($timerId);
+            }
             $this->sendErrorMessage($connection, 'AI服务响应失败');
         }
     }
@@ -593,15 +626,15 @@ class AiServer
             
             $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
             
-            // 【关键修复】添加调试日志，确认流式数据发送时机
+            // 【调试日志】记录流式数据发送
             if (isset($data['data']['isStreaming']) && $data['data']['isStreaming']) {
                 $status = $data['data']['status'] ?? 'unknown';
                 $contentLen = mb_strlen($data['data']['content'] ?? '', 'UTF-8');
                 echo "📤 [流式发送] status={$status}, content_len={$contentLen}, conn_id={$connection->id}\n";
             }
             
-            // 【关键修复】直接写入 socket，绕过 Workerman 的发送缓冲区
-            $connection->send($json, true);
+            // Workerman 会自动处理 WebSocket 帧封装
+            $connection->send($json);
             
         } catch (\JsonException $e) {
             echo "JSON编码错误: " . $e->getMessage() . "\n";

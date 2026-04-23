@@ -143,17 +143,17 @@ class AiServer
         }
 
         $connection->userId = $token;
-        
+
         if (!isset($this->userConnections[$token])) {
             $this->userConnections[$token] = [];
         }
-        
+
         $this->userConnections[$token][$connection->id] = $connection;
         $this->clients[$connection->id]["userID"] = $token;
-        
+
         $roomId = $authResult['room_id'];
         $this->userToRoom[$token] = $roomId;
-        
+
         if (!isset($this->roomUsers[$roomId])) {
             $this->roomUsers[$roomId] = [];
         }
@@ -179,7 +179,7 @@ class AiServer
     {
         try {
             $onlineUser = OnlineUser::where('user_token', $userToken)->find();
-            
+
             if ($onlineUser) {
                 $onlineUser->room_id = $roomId;
                 $onlineUser->last_active_time = date('Y-m-d H:i:s');
@@ -225,7 +225,7 @@ class AiServer
     {
         try {
             $user = User::where('user_token', $token)->find();
-            
+
             if (empty($user) || empty($user->id)) {
                 return [
                     'success' => false,
@@ -236,16 +236,16 @@ class AiServer
             }
 
             $roomUser = RoomUser::where('user_id', $user->id)->find();
-            
+
             if (!$roomUser) {
                 $room = Room::create(['create_user' => $user->id]);
                 $roomId = $room->id;
-                
+
                 RoomUser::create([
                     'user_id' => (string)$user->id,
                     'room_id' => $roomId
                 ]);
-                
+
                 echo "为用户 {$user->id} 创建新房间 {$roomId}\n";
             } else {
                 $roomId = $roomUser->room_id;
@@ -257,7 +257,7 @@ class AiServer
                 'room_id' => $roomId,
                 'user_id' => (string)$user->id
             ];
-            
+
         } catch (\Exception $e) {
             echo "Token验证异常: " . $e->getMessage() . "\n";
             return [
@@ -277,14 +277,14 @@ class AiServer
         }
 
         $userToken = $connection->userId;
-        
+
         if (!$this->checkMessageRateLimit($userToken)) {
             $this->sendErrorMessage($connection, 'Message rate limit exceeded');
             return;
         }
 
         $content = trim($data['content'] ?? '');
-        
+
         if (empty($content)) {
             $this->sendErrorMessage($connection, 'Empty message content');
             return;
@@ -360,7 +360,7 @@ class AiServer
         ];
 
         $this->sendToOtherUserConnections($userToken, $connection->id, $userMessageData);
-        
+
         if ($roomId) {
             $this->broadcastToRoom($userMessageData, $roomId, $connection);
         }
@@ -378,7 +378,7 @@ class AiServer
                 'status' => 'start'
             ]
         ];
-        
+
         $this->sendToAllUserConnections($userToken, $startSignal);
 
         // 获取聊天历史
@@ -386,94 +386,44 @@ class AiServer
 
         $fullResponse = '';
         $chunkCount = 0;
-        $startTime = microtime(true);
-        
-        // 【关键修复】使用队列和定时器实现真正的异步流式推送
-        $streamQueue = [];
-        $isProcessing = false;
-        $aiCompleted = false;
-        $timerId = null;
 
-        echo "🤖 [AI开始] 用户: {$userToken}, 消息长度: " . mb_strlen($message, 'UTF-8') . "\n";
+        $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use ($userToken, $roomId, &$fullResponse, &$chunkCount) {
+            $fullResponse .= $chunk;
+            $chunkCount++;
 
-        // 启动定时器处理队列（每10ms检查一次）
-        $timerId = Timer::add(0.01, function() use (&$streamQueue, &$isProcessing, $userToken, $roomId, &$chunkCount, $startTime, &$fullResponse, &$aiCompleted, &$timerId, $connection, $message) {
-            if (empty($streamQueue) && $aiCompleted) {
-                // 队列清空且AI已完成，停止定时器
-                Timer::del($timerId);
-                
-                $totalTime = round(microtime(true) - $startTime, 2);
-                echo "✅ [AI完成] 总chunk数: {$chunkCount}, 总长度: " . mb_strlen($fullResponse, 'UTF-8') . ", 耗时: {$totalTime}s\n";
-                
-                // 发送结束信号
-                $this->sendToAllUserConnections($userToken, [
-                    'type' => 'chat',
-                    'data' => [
-                        'isStreaming' => false,
-                        'content' => '',
-                        'timestamp' => time(),
-                        'room_id' => $roomId,
-                        'sender_id' => 'ai',
-                        'is_ai' => true,
-                        'status' => 'end',
-                        'full_content' => $fullResponse
-                    ]
-                ]);
-                
-                // 保存历史记录
-                $this->saveChatHistory($userToken, $message, $fullResponse, $roomId);
-                $this->updateUserChatCount($userToken);
-                
-                return;
-            }
-            
-            if (!empty($streamQueue) && !$isProcessing) {
-                $isProcessing = true;
-                $chunk = array_shift($streamQueue);
-                
-                if ($chunk !== null && $chunk !== '') {
-                    $fullResponse .= $chunk;
-                    $chunkCount++;
-                    
-                    $elapsed = round(microtime(true) - $startTime, 2);
-                    
-                    if ($chunkCount <= 3 || $chunkCount % 5 === 0) {
-                        echo "📨 [AI Chunk #{$chunkCount}] [{$elapsed}s] 长度: " . mb_strlen($chunk, 'UTF-8') . "\n";
-                    }
-                    
-                    $this->sendToAllUserConnections($userToken, [
-                        'type' => 'chat',
-                        'data' => [
-                            'isStreaming' => true,
-                            'content' => $chunk,
-                            'timestamp' => time(),
-                            'room_id' => $roomId,
-                            'sender_id' => 'ai',
-                            'is_ai' => true,
-                            'status' => 'streaming'
-                        ]
-                    ]);
-                }
-                
-                $isProcessing = false;
-            }
+            $this->sendToAllUserConnections($userToken, [
+                'type' => 'chat',
+                'data' => [
+                    'isStreaming' => true,
+                    'content' => $chunk,
+                    'timestamp' => time(),
+                    'room_id' => $roomId,
+                    'sender_id' => 'ai',
+                    'is_ai' => true,
+                    'status' => 'streaming'
+                ]
+            ]);
         });
 
-        // 在后台执行AI请求（仍然是阻塞的，但定时器会同时运行）
-        $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use (&$streamQueue) {
-            // 将chunk加入队列，由定时器异步发送
-            if (!empty($chunk)) {
-                $streamQueue[] = $chunk;
-            }
-        });
-        
-        // 标记AI已完成
-        $aiCompleted = true;
+        // 发送结束信号
+        $this->sendToAllUserConnections($userToken, [
+            'type' => 'chat',
+            'data' => [
+                'isStreaming' => false,
+                'content' => '',
+                'timestamp' => time(),
+                'room_id' => $roomId,
+                'sender_id' => 'ai',
+                'is_ai' => true,
+                'status' => 'end',
+                'full_content' => $fullResponse
+            ]
+        ]);
 
-        if (!$success) {
-            if ($timerId) {
-                Timer::del($timerId);
-            }
+        if ($success) {
+            $this->saveChatHistory($userToken, $message, $fullResponse, $roomId);
+            $this->updateUserChatCount($userToken);
+        } else {
             $this->sendErrorMessage($connection, 'AI服务响应失败');
         }
     }
@@ -485,20 +435,20 @@ class AiServer
             if (!$user || empty($user->id)) {
                 return [];
             }
-            
+
             $userId = $user->id;
-            
+
             $history = RoomCommons::where('user_id', $userId)
                 ->order('create_time', 'desc')
                 ->limit($limit)
                 ->select()
                 ->toArray();
-            
+
             $history = array_reverse($history);
 
-            
+
             return $history;
-            
+
         } catch (\Exception $e) {
             echo "❌ 获取对话历史异常: " . $e->getMessage() . "\n";
             echo "错误文件: " . $e->getFile() . ":" . $e->getLine() . "\n";
@@ -513,16 +463,16 @@ class AiServer
             if (!$user || empty($user->id)) {
                 return;
             }
-            
+
             $userId = $user->id;
-            
+
             RoomCommons::create([
                 'user_id' => $userId,
                 'room_id' => $roomId,
                 'message_type' => 'user',
                 'content' => $userMessage
             ]);
-            
+
             RoomCommons::create([
                 'user_id' => $userId,
                 'room_id' => $roomId,
@@ -539,14 +489,14 @@ class AiServer
     private function checkMessageRateLimit(string $userToken): bool
     {
         $currentTime = time();
-        
+
         if (isset($this->lastMessageTime[$userToken])) {
             $timeSinceLastMessage = $currentTime - $this->lastMessageTime[$userToken];
             if ($timeSinceLastMessage < self::MESSAGE_COOLDOWN) {
                 return false;
             }
         }
-        
+
         $this->lastMessageTime[$userToken] = $currentTime;
         return true;
     }
@@ -567,7 +517,7 @@ class AiServer
                 unset($this->userConnections[$userToken][$connId]);
             }
         }
-        
+
     }
 
     private function sendToOtherUserConnections(string $userToken, int $excludeConnId, array $data): void
@@ -581,7 +531,7 @@ class AiServer
             if ($connId == $excludeConnId) {
                 continue;
             }
-            
+
             try {
                 $this->sendToClient($connection, $data);
                 $sentCount++;
@@ -623,19 +573,9 @@ class AiServer
     {
         try {
             $data = $this->ensureUtf8Encoding($data);
-            
+
             $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
-            
-            // 【调试日志】记录流式数据发送
-            if (isset($data['data']['isStreaming']) && $data['data']['isStreaming']) {
-                $status = $data['data']['status'] ?? 'unknown';
-                $contentLen = mb_strlen($data['data']['content'] ?? '', 'UTF-8');
-                echo "📤 [流式发送] status={$status}, content_len={$contentLen}, conn_id={$connection->id}\n";
-            }
-            
-            // Workerman 会自动处理 WebSocket 帧封装
             $connection->send($json);
-            
         } catch (\JsonException $e) {
             echo "JSON编码错误: " . $e->getMessage() . "\n";
             echo "原始数据: " . print_r($data, true) . "\n";
@@ -659,7 +599,7 @@ class AiServer
             }
             return $data;
         }
-        
+
         return $data;
     }
 
@@ -680,13 +620,13 @@ class AiServer
 
         if (isset($connection->userId)) {
             $userToken = $connection->userId;
-            
+
             if (isset($this->userConnections[$userToken])) {
                 unset($this->userConnections[$userToken][$connection->id]);
-                
+
                 if (empty($this->userConnections[$userToken])) {
                     unset($this->userConnections[$userToken]);
-                    
+
                     if (isset($this->userToRoom[$userToken])) {
                         $roomId = $this->userToRoom[$userToken];
                         if (isset($this->roomUsers[$roomId])) {
@@ -695,20 +635,20 @@ class AiServer
                                 unset($this->roomUsers[$roomId][$key]);
                                 $this->roomUsers[$roomId] = array_values($this->roomUsers[$roomId]);
                             }
-                            
+
                             if (empty($this->roomUsers[$roomId])) {
                                 unset($this->roomUsers[$roomId]);
                                 echo "房间 {$roomId} 已清空并删除\n";
                             }
                         }
-                        
+
                         unset($this->userToRoom[$userToken]);
                     }
-                    
+
                     unset($this->lastMessageTime[$userToken]);
-                    
+
                     $this->removeOnlineUser($userToken);
-                    
+
                 }
             }
         }
@@ -732,7 +672,7 @@ class AiServer
     {
         $sslConfig = config('aliyun.websocket_ssl', []);
         $isSslEnabled = $sslConfig['enable'] ?? false;
-        $port = 2346; 
+        $port = 2346;
 
         echo "正在启动 WebSocket 服务器 (端口: {$port}, SSL: " . ($isSslEnabled ? '开启' : '关闭') . ")...\n";
 
@@ -756,12 +696,12 @@ class AiServer
         }
 
         $worker = new Worker("websocket://0.0.0.0:{$port}", $workerContext);
-        
+
         if ($isSslEnabled) {
             $worker->transport = 'ssl';
         }
 
-        $worker->count = 1; 
+        $worker->count = 1;
         $worker->name = 'ChatWebSocket';
 
         $worker->onWorkerStart = [$this, 'onWorkerStart'];

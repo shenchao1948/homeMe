@@ -83,22 +83,17 @@ class AiServer
     {
         $connection->lastMessageTime = time();
 
-        echo "📨 [服务端] 收到消息 - 连接ID: {$connection->id}, 数据长度: " . strlen($data) . "\n";
-
         try {
             $message = json_decode($data, true, 512, JSON_THROW_ON_ERROR);
 
             if (!is_array($message)) {
-                echo "❌ [服务端] 消息格式错误\n";
                 $this->sendErrorMessage($connection, 'Invalid message format');
                 return;
             }
 
-            echo "✅ [服务端] 消息解析成功, type: " . ($message['type'] ?? 'unknown') . "\n";
             $this->handleMessageType($connection, $message);
 
         } catch (\JsonException $e) {
-            echo "❌ [服务端] JSON解析错误: " . $e->getMessage() . "\n";
             $this->sendErrorMessage($connection, 'JSON decode error: ' . $e->getMessage());
         } catch (\Exception $e) {
             echo "❌ [服务端] 处理消息异常: " . $e->getMessage() . "\n";
@@ -323,10 +318,8 @@ class AiServer
 
         if ($targetUserId > 0 && isset($this->userConnections[$targetUserId])) {
             $this->sendToClient($this->userConnections[$targetUserId], $messageData);
-            echo "私聊消息: {$userToken} -> {$targetUserId}\n";
         } elseif ($roomId) {
             $this->broadcastToRoom($messageData, $roomId, $connection);
-            echo "房间消息: 房间 {$roomId}, 发送者 {$userToken}\n";
         } else {
             $this->sendErrorMessage($connection, 'No valid room or target user');
             return;
@@ -342,16 +335,9 @@ class AiServer
 
     private function handleAiChat(TcpConnection $connection, string $message, ?int $roomId, string $userToken): void
     {
-        echo "🤖 [服务端] 开始处理AI对话 - 用户: {$userToken}, 房间: {$roomId}\n";
-        echo "   🔗 [DEBUG] 当前连接ID: {$connection->id}\n";
-        echo "   👥 [DEBUG] userConnections 中的用户数: " . count($this->userConnections) . "\n";
-        echo "   📋 [DEBUG] userConnections keys: " . implode(', ', array_keys($this->userConnections)) . "\n";
-        
         if ($this->aliyun === null) {
             try {
-                echo "   [服务端] 初始化阿里云AI服务...\n";
                 $this->aliyun = new Aliyun();
-                echo "   ✅ [服务端] AI服务初始化成功\n";
             } catch (\Exception $e) {
                 echo "   ❌ [服务端] AI服务初始化失败: " . $e->getMessage() . "\n";
                 $this->sendErrorMessage($connection, 'AI服务初始化失败: ' . $e->getMessage());
@@ -373,18 +359,13 @@ class AiServer
             ]
         ];
 
-        echo "   📢 [DEBUG] 广播用户消息到其他连接...\n";
         $this->sendToOtherUserConnections($userToken, $connection->id, $userMessageData);
         
         if ($roomId) {
-            echo "   📢 [DEBUG] 广播用户消息到房间 {$roomId}...\n";
             $this->broadcastToRoom($userMessageData, $roomId, $connection);
         }
 
         // 【关键】立即发送 start 信号
-        echo "   📤 [服务端] 发送 AI start 信号...\n";
-        echo "   🔑 [DEBUG] start信号的userToken: {$userToken}\n";
-        
         $startSignal = [
             'type' => 'chat',
             'data' => [
@@ -399,24 +380,16 @@ class AiServer
         ];
         
         $this->sendToAllUserConnections($userToken, $startSignal);
-        echo "   ✅ [服务端] AI start 信号发送完成\n";
 
         // 获取聊天历史
-        echo "   📚 [服务端] 获取聊天历史...\n";
         $contextMessages = $this->getRecentChatHistory($userToken, 20);
-        echo "   ✅ [服务端] 获取到 " . count($contextMessages) . " 条历史记录\n";
 
         $fullResponse = '';
         $chunkCount = 0;
 
-        echo "   🔄 [服务端] 开始调用阿里云AI API...\n";
         $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use ($userToken, $roomId, &$fullResponse, &$chunkCount) {
             $fullResponse .= $chunk;
             $chunkCount++;
-            
-            if ($chunkCount % 5 === 0) { // 每5个chunk打印一次日志
-                echo "   📊 [服务端] 已发送 {$chunkCount} 个内容块\n";
-            }
             
             $this->sendToAllUserConnections($userToken, [
                 'type' => 'chat',
@@ -432,10 +405,7 @@ class AiServer
             ]);
         });
 
-        echo "   🏁 [服务端] AI响应完成 - 总chunk数: {$chunkCount}, 成功: " . ($success ? '是' : '否') . "\n";
-
         // 发送结束信号
-        echo "   📤 [服务端] 发送 AI end 信号...\n";
         $this->sendToAllUserConnections($userToken, [
             'type' => 'chat',
             'data' => [
@@ -451,12 +421,9 @@ class AiServer
         ]);
 
         if ($success) {
-            echo "   💾 [服务端] 保存聊天历史...\n";
             $this->saveChatHistory($userToken, $message, $fullResponse, $roomId);
             $this->updateUserChatCount($userToken);
-            echo "   ✅ [服务端] AI对话处理完成\n";
         } else {
-            echo "   ❌ [服务端] AI服务响应失败\n";
             $this->sendErrorMessage($connection, 'AI服务响应失败');
         }
     }
@@ -466,7 +433,6 @@ class AiServer
         try {
             $user = User::where('user_token', $userToken)->find();
             if (!$user || empty($user->id)) {
-                echo "获取对话历史失败：未找到用户信息\n";
                 return [];
             }
             
@@ -537,20 +503,13 @@ class AiServer
 
     private function sendToAllUserConnections(string $userToken, array $data): void
     {
-        echo "   🔍 [DEBUG] sendToAllUserConnections 调用 - userToken: {$userToken}\n";
-        
         if (!isset($this->userConnections[$userToken])) {
-            echo "   ❌ [DEBUG] userConnections 中不存在该用户: {$userToken}\n";
-            echo "   📋 [DEBUG] 当前所有用户连接: " . implode(', ', array_keys($this->userConnections)) . "\n";
             return;
         }
 
-        echo "   ✅ [DEBUG] 找到用户连接，数量: " . count($this->userConnections[$userToken]) . "\n";
-        
         $sentCount = 0;
         foreach ($this->userConnections[$userToken] as $connId => $connection) {
             try {
-                echo "   📤 [DEBUG] 发送到连接 ID: {$connId}\n";
                 $this->sendToClient($connection, $data);
                 $sentCount++;
             } catch (\Exception $e) {
@@ -559,7 +518,6 @@ class AiServer
             }
         }
         
-        echo "   📊 [DEBUG] 成功发送到 {$sentCount} 个连接\n";
     }
 
     private function sendToOtherUserConnections(string $userToken, int $excludeConnId, array $data): void
@@ -609,7 +567,6 @@ class AiServer
             }
         }
 
-        echo "消息广播到房间 {$roomId}, 发送给 {$sentCount} 个连接\n";
     }
 
     private function sendToClient(TcpConnection $connection, array $data): void
@@ -692,14 +649,10 @@ class AiServer
                     
                     $this->removeOnlineUser($userToken);
                     
-                    echo "用户 {$userToken} 的所有连接已断开\n";
-                } else {
-                    echo "用户 {$userToken} 的一个连接断开，剩余 " . count($this->userConnections[$userToken]) . " 个连接\n";
                 }
             }
         }
 
-        echo "客户端 {$connection->id} 断开连接, 剩余连接数: " . count($this->clients) . "\n";
     }
 
     public function onError(TcpConnection $connection, int $code, string $msg): void

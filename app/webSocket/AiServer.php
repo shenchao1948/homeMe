@@ -1,0 +1,715 @@
+<?php
+declare(strict_types=1);
+
+namespace app\webSocket;
+
+use app\home\model\Room;
+use app\home\model\RoomCommons;
+use app\home\model\RoomUser;
+use app\home\model\User;
+use app\admin\model\OnlineUser;
+use Workerman\Worker;
+use Workerman\Connection\TcpConnection;
+use Workerman\Timer;
+
+class AiServer
+{
+    private const MAX_ROOM_COUNT = 50;
+
+    private Worker $worker;
+
+    private array $clients = [];
+
+    private array $userConnections = [];
+
+    private array $userToRoom = [];
+
+    private array $roomUsers = [];
+
+    private const HEARTBEAT_TIME = 55;
+
+    private const PING_INTERVAL = 25;
+
+    private const MAX_MESSAGE_LENGTH = 500;
+
+    private const MESSAGE_COOLDOWN = 1;
+
+    private array $lastMessageTime = [];
+
+    private ?Aliyun $aliyun = null;
+
+    public function __construct()
+    {
+
+    }
+
+    public function onWorkerStart(Worker $worker): void
+    {
+        echo "WebSocket服务器已在端口2346启动\n";
+
+        Timer::add(self::PING_INTERVAL, function() use ($worker) {
+            $currentTime = time();
+            foreach ($worker->connections as $connection) {
+                if (isset($connection->lastMessageTime)) {
+                    $timeSinceLastMessage = $currentTime - $connection->lastMessageTime;
+                    if ($timeSinceLastMessage >= self::HEARTBEAT_TIME) {
+                        echo "连接 {$connection->id} 超时，关闭连接\n";
+                        $connection->close();
+                        continue;
+                    }
+
+                    if ($timeSinceLastMessage >= self::PING_INTERVAL) {
+                        $this->sendToClient($connection, [
+                            'type' => 'ping',
+                            'timestamp' => $currentTime
+                        ]);
+                    }
+                }
+            }
+        });
+    }
+
+    public function onConnect(TcpConnection $connection): void
+    {
+        $connection->lastMessageTime = time();
+        $this->clients[$connection->id] = [
+            "connection" => $connection,
+            "userID" => null
+        ];
+        echo "新客户端连接: {$connection->id}, 当前连接数: " . count($this->clients) . "\n";
+    }
+
+    public function onMessage(TcpConnection $connection, string $data): void
+    {
+        $connection->lastMessageTime = time();
+
+        try {
+            $message = json_decode($data, true, 512, JSON_THROW_ON_ERROR);
+
+            if (!is_array($message)) {
+                $this->sendErrorMessage($connection, 'Invalid message format');
+                return;
+            }
+
+            $this->handleMessageType($connection, $message);
+
+        } catch (\JsonException $e) {
+            $this->sendErrorMessage($connection, 'JSON decode error: ' . $e->getMessage());
+        } catch (\Exception $e) {
+            $this->sendErrorMessage($connection, 'Server error: ' . $e->getMessage());
+            echo "处理消息异常: " . $e->getMessage() . "\n";
+        }
+    }
+
+    private function handleMessageType(TcpConnection $connection, array $message): void
+    {
+        $type = $message['type'] ?? '';
+
+        switch ($type) {
+            case 'auth':
+                $this->handleAuth($connection, $message['data'] ?? []);
+                break;
+
+            case 'chat':
+                $this->handleChat($connection, $message['data'] ?? []);
+                break;
+
+            case 'pong':
+                break;
+
+            default:
+                $this->sendErrorMessage($connection, 'Unknown message type: ' . $type);
+        }
+    }
+
+    private function handleAuth(TcpConnection $connection, array $data): void
+    {
+        $token = $data['token'] ?? '';
+        $userId = $data['user_id'] ?? 0;
+
+        if (empty($token) || empty($userId)) {
+            $this->sendErrorMessage($connection, 'Authentication failed: missing parameters');
+            $connection->close();
+            return;
+        }
+
+        $authResult = $this->validateToken($token,$userId);
+        $userId = "".$authResult['user_id'];
+        if (!$authResult['success']) {
+            $this->sendErrorMessage($connection, 'Authentication failed: ' . $authResult['message']);
+            $connection->close();
+            return;
+        }
+
+        $connection->userId = $token;
+        
+        if (!isset($this->userConnections[$token])) {
+            $this->userConnections[$token] = [];
+        }
+        
+        $this->userConnections[$token][$connection->id] = $connection;
+        $this->clients[$connection->id]["userID"] = $token;
+        
+        $roomId = $authResult['room_id'];
+        $this->userToRoom[$token] = $roomId;
+        
+        if (!isset($this->roomUsers[$roomId])) {
+            $this->roomUsers[$roomId] = [];
+        }
+        if (!in_array($token, $this->roomUsers[$roomId])) {
+            $this->roomUsers[$roomId][] = $token;
+        }
+
+        $this->updateOnlineUserStatus($token, $roomId);
+
+        $this->sendToClient($connection, [
+            'type' => 'system',
+            'data' => [
+                'event' => 'authenticated',
+                'room_id' => $roomId,
+                'message' => 'Authentication successful'
+            ]
+        ]);
+
+        echo "用户 {$userId} (token: {$token}) 认证成功，加入房间 {$roomId}，当前连接数: " . count($this->userConnections[$token]) . "\n";
+    }
+
+    private function updateOnlineUserStatus(string $userToken, int $roomId): void
+    {
+        try {
+            $onlineUser = OnlineUser::where('user_token', $userToken)->find();
+            
+            if ($onlineUser) {
+                $onlineUser->room_id = $roomId;
+                $onlineUser->last_active_time = date('Y-m-d H:i:s');
+                $onlineUser->save();
+            } else {
+                OnlineUser::create([
+                    'user_token' => $userToken,
+                    'room_id' => $roomId,
+                    'chat_count' => 0,
+                    'login_time' => date('Y-m-d H:i:s'),
+                    'last_active_time' => date('Y-m-d H:i:s')
+                ]);
+            }
+        } catch (\Exception $e) {
+            echo "更新在线用户状态失败: " . $e->getMessage() . "\n";
+        }
+    }
+
+    private function updateUserChatCount(string $userToken): void
+    {
+        try {
+            $onlineUser = OnlineUser::where('user_token', $userToken)->find();
+            if ($onlineUser) {
+                $onlineUser->chat_count = $onlineUser->chat_count + 1;
+                $onlineUser->last_active_time = date('Y-m-d H:i:s');
+                $onlineUser->save();
+            }
+        } catch (\Exception $e) {
+            echo "更新用户聊天次数失败: " . $e->getMessage() . "\n";
+        }
+    }
+
+    private function removeOnlineUser(string $userToken): void
+    {
+        try {
+            OnlineUser::where('user_token', $userToken)->delete();
+        } catch (\Exception $e) {
+            echo "删除在线用户记录失败: " . $e->getMessage() . "\n";
+        }
+    }
+
+    private function validateToken(string $token, string $userId): array
+    {
+        try {
+            $user = User::where('user_token', $token)->find();
+            
+            if (empty($user) || empty($user->id)) {
+                return [
+                    'success' => false,
+                    'message' => 'Invalid token',
+                    'room_id' => null,
+                    'user_id' => $userId
+                ];
+            }
+
+            $roomUser = RoomUser::where('user_id', $user->id)->find();
+            
+            if (!$roomUser) {
+                $room = Room::create(['create_user' => $user->id]);
+                $roomId = $room->id;
+                
+                RoomUser::create([
+                    'user_id' => (string)$user->id,
+                    'room_id' => $roomId
+                ]);
+                
+                echo "为用户 {$user->id} 创建新房间 {$roomId}\n";
+            } else {
+                $roomId = $roomUser->room_id;
+            }
+
+            return [
+                'success' => true,
+                'message' => 'Success',
+                'room_id' => $roomId,
+                'user_id' => (string)$user->id
+            ];
+            
+        } catch (\Exception $e) {
+            echo "Token验证异常: " . $e->getMessage() . "\n";
+            return [
+                'success' => false,
+                'message' => 'Server error during authentication',
+                'room_id' => null,
+                'user_id' => $userId
+            ];
+        }
+    }
+
+    private function handleChat(TcpConnection $connection, array $data): void
+    {
+        if (!isset($connection->userId)) {
+            $this->sendErrorMessage($connection, 'Not authenticated');
+            return;
+        }
+
+        $userToken = $connection->userId;
+        
+        if (!$this->checkMessageRateLimit($userToken)) {
+            $this->sendErrorMessage($connection, 'Message rate limit exceeded');
+            return;
+        }
+
+        $content = trim($data['content'] ?? '');
+        
+        if (empty($content)) {
+            $this->sendErrorMessage($connection, 'Empty message content');
+            return;
+        }
+
+        if (mb_strlen($content) > self::MAX_MESSAGE_LENGTH) {
+            $this->sendErrorMessage($connection, 'Message too long (max ' . self::MAX_MESSAGE_LENGTH . ' characters)');
+            return;
+        }
+
+        $targetUserId = $data['target_user_id'] ?? 0;
+        $roomId = $data['room_id'] ?? ($this->userToRoom[$userToken] ?? null);
+
+        $isAiMessage = ($data['is_ai'] ?? false) || $targetUserId === 'ai';
+
+        if ($isAiMessage) {
+            $this->handleAiChat($connection, $content, $roomId, $userToken);
+            return;
+        }
+
+        $messageData = [
+            'type' => 'chat',
+            'data' => [
+                'isStreaming' => false,
+                'content' => $content,
+                'timestamp' => time(),
+                'room_id' => $roomId,
+                'sender_id' => $userToken
+            ]
+        ];
+
+        if ($targetUserId > 0 && isset($this->userConnections[$targetUserId])) {
+            $this->sendToClient($this->userConnections[$targetUserId], $messageData);
+            echo "私聊消息: {$userToken} -> {$targetUserId}\n";
+        } elseif ($roomId) {
+            $this->broadcastToRoom($messageData, $roomId, $connection);
+            echo "房间消息: 房间 {$roomId}, 发送者 {$userToken}\n";
+        } else {
+            $this->sendErrorMessage($connection, 'No valid room or target user');
+            return;
+        }
+
+        $this->updateUserChatCount($userToken);
+
+        $this->sendToClient($connection, [
+            'type' => 'system',
+            'data' => ['event' => 'message_sent']
+        ]);
+    }
+
+    private function handleAiChat(TcpConnection $connection, string $message, ?int $roomId, string $userToken): void
+    {
+        if ($this->aliyun === null) {
+            try {
+                $this->aliyun = new Aliyun();
+            } catch (\Exception $e) {
+                $this->sendErrorMessage($connection, 'AI服务初始化失败: ' . $e->getMessage());
+                return;
+            }
+        }
+
+        $userMessageData = [
+            'type' => 'chat',
+            'data' => [
+                'isStreaming' => false,
+                'content' => $message,
+                'timestamp' => time(),
+                'room_id' => $roomId,
+                'sender_id' => $userToken,
+                'sender_connection_id' => $connection->id,
+                'is_ai' => false
+            ]
+        ];
+
+        $this->sendToOtherUserConnections($userToken, $connection->id, $userMessageData);
+        
+        if ($roomId) {
+            $this->broadcastToRoom($userMessageData, $roomId, $connection);
+        }
+
+        $this->sendToAllUserConnections($userToken, [
+            'type' => 'chat',
+            'data' => [
+                'isStreaming' => true,
+                'content' => '',
+                'timestamp' => time(),
+                'room_id' => $roomId,
+                'sender_id' => 'ai',
+                'is_ai' => true,
+                'status' => 'start'
+            ]
+        ]);
+
+        $contextMessages = $this->getRecentChatHistory($userToken, 20);
+
+        $fullResponse = '';
+        $chunkCount = 0;
+
+        $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use ($userToken, $roomId, &$fullResponse, &$chunkCount) {
+            $fullResponse .= $chunk;
+            $chunkCount++;
+            
+            $this->sendToAllUserConnections($userToken, [
+                'type' => 'chat',
+                'data' => [
+                    'isStreaming' => true,
+                    'content' => $chunk,
+                    'timestamp' => time(),
+                    'room_id' => $roomId,
+                    'sender_id' => 'ai',
+                    'is_ai' => true,
+                    'status' => 'streaming'
+                ]
+            ]);
+        });
+
+        $this->sendToAllUserConnections($userToken, [
+            'type' => 'chat',
+            'data' => [
+                'isStreaming' => false,
+                'content' => '',
+                'timestamp' => time(),
+                'room_id' => $roomId,
+                'sender_id' => 'ai',
+                'is_ai' => true,
+                'status' => 'end',
+                'full_content' => $fullResponse
+            ]
+        ]);
+
+        if ($success) {
+            $this->saveChatHistory($userToken, $message, $fullResponse, $roomId);
+            $this->updateUserChatCount($userToken);
+        } else {
+            echo "❌ AI服务响应失败\n";
+            $this->sendErrorMessage($connection, 'AI服务响应失败');
+        }
+    }
+
+    private function getRecentChatHistory(string $userToken, int $limit = 30): array
+    {
+        try {
+            $user = User::where('user_token', $userToken)->find();
+            if (!$user || empty($user->id)) {
+                echo "获取对话历史失败：未找到用户信息\n";
+                return [];
+            }
+            
+            $userId = $user->id;
+            
+            $history = RoomCommons::where('user_id', $userId)
+                ->order('create_time', 'desc')
+                ->limit($limit)
+                ->select()
+                ->toArray();
+            
+            $history = array_reverse($history);
+
+            
+            return $history;
+            
+        } catch (\Exception $e) {
+            echo "❌ 获取对话历史异常: " . $e->getMessage() . "\n";
+            echo "错误文件: " . $e->getFile() . ":" . $e->getLine() . "\n";
+            return [];
+        }
+    }
+
+    private function saveChatHistory(string $userToken, string $userMessage, string $aiResponse, ?int $roomId): void
+    {
+        try {
+            $user = User::where('user_token', $userToken)->find();
+            if (!$user || empty($user->id)) {
+                return;
+            }
+            
+            $userId = $user->id;
+            
+            RoomCommons::create([
+                'user_id' => $userId,
+                'room_id' => $roomId,
+                'message_type' => 'user',
+                'content' => $userMessage
+            ]);
+            
+            RoomCommons::create([
+                'user_id' => $userId,
+                'room_id' => $roomId,
+                'message_type' => 'ai',
+                'content' => $aiResponse
+            ]);
+
+        } catch (\Exception $e) {
+            echo "❌ 保存对话历史异常: " . $e->getMessage() . "\n";
+            echo "错误文件: " . $e->getFile() . ":" . $e->getLine() . "\n";
+        }
+    }
+
+    private function checkMessageRateLimit(string $userToken): bool
+    {
+        $currentTime = time();
+        
+        if (isset($this->lastMessageTime[$userToken])) {
+            $timeSinceLastMessage = $currentTime - $this->lastMessageTime[$userToken];
+            if ($timeSinceLastMessage < self::MESSAGE_COOLDOWN) {
+                return false;
+            }
+        }
+        
+        $this->lastMessageTime[$userToken] = $currentTime;
+        return true;
+    }
+
+    private function sendToAllUserConnections(string $userToken, array $data): void
+    {
+        if (!isset($this->userConnections[$userToken])) {
+            return;
+        }
+
+        $sentCount = 0;
+        foreach ($this->userConnections[$userToken] as $connId => $connection) {
+            try {
+                $this->sendToClient($connection, $data);
+                $sentCount++;
+            } catch (\Exception $e) {
+                unset($this->userConnections[$userToken][$connId]);
+            }
+        }
+
+    }
+
+    private function sendToOtherUserConnections(string $userToken, int $excludeConnId, array $data): void
+    {
+        if (!isset($this->userConnections[$userToken])) {
+            return;
+        }
+
+        $sentCount = 0;
+        foreach ($this->userConnections[$userToken] as $connId => $connection) {
+            if ($connId == $excludeConnId) {
+                continue;
+            }
+            
+            try {
+                $this->sendToClient($connection, $data);
+                $sentCount++;
+            } catch (\Exception $e) {
+                echo "发送消息到连接 {$connId} 失败: " . $e->getMessage() . "\n";
+                unset($this->userConnections[$userToken][$connId]);
+            }
+        }
+    }
+
+    private function broadcastToRoom(array $message, int $roomId, TcpConnection $excludeConnection = null): void
+    {
+        if (!isset($this->roomUsers[$roomId])) {
+            return;
+        }
+
+        $sentCount = 0;
+        foreach ($this->roomUsers[$roomId] as $userToken) {
+            if ($excludeConnection && isset($excludeConnection->userId) && $excludeConnection->userId === $userToken) {
+                continue;
+            }
+
+            if (isset($this->userConnections[$userToken])) {
+                foreach ($this->userConnections[$userToken] as $connId => $connection) {
+                    try {
+                        $this->sendToClient($connection, $message);
+                        $sentCount++;
+                    } catch (\Exception $e) {
+                        echo "广播消息到连接 {$connId} 失败: " . $e->getMessage() . "\n";
+                        unset($this->userConnections[$userToken][$connId]);
+                    }
+                }
+            }
+        }
+
+        echo "消息广播到房间 {$roomId}, 发送给 {$sentCount} 个连接\n";
+    }
+
+    private function sendToClient(TcpConnection $connection, array $data): void
+    {
+        try {
+            $data = $this->ensureUtf8Encoding($data);
+            
+            $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+            $connection->send($json);
+        } catch (\JsonException $e) {
+            echo "JSON编码错误: " . $e->getMessage() . "\n";
+            echo "原始数据: " . print_r($data, true) . "\n";
+        }
+    }
+
+    private function ensureUtf8Encoding($data)
+    {
+        if (is_string($data)) {
+            if (!mb_check_encoding($data, 'UTF-8')) {
+                $converted = mb_convert_encoding($data, 'UTF-8', 'GBK');
+                if ($converted !== false && mb_check_encoding($converted, 'UTF-8')) {
+                    return $converted;
+                }
+                return mb_convert_encoding($data, 'UTF-8', 'UTF-8');
+            }
+            return $data;
+        } elseif (is_array($data)) {
+            foreach ($data as $key => $value) {
+                $data[$key] = $this->ensureUtf8Encoding($value);
+            }
+            return $data;
+        }
+        
+        return $data;
+    }
+
+    private function sendErrorMessage(TcpConnection $connection, string $message): void
+    {
+        $this->sendToClient($connection, [
+            'type' => 'system',
+            'data' => [
+                'event' => 'error',
+                'message' => $message
+            ]
+        ]);
+    }
+
+    public function onClose(TcpConnection $connection): void
+    {
+        unset($this->clients[$connection->id]);
+
+        if (isset($connection->userId)) {
+            $userToken = $connection->userId;
+            
+            if (isset($this->userConnections[$userToken])) {
+                unset($this->userConnections[$userToken][$connection->id]);
+                
+                if (empty($this->userConnections[$userToken])) {
+                    unset($this->userConnections[$userToken]);
+                    
+                    if (isset($this->userToRoom[$userToken])) {
+                        $roomId = $this->userToRoom[$userToken];
+                        if (isset($this->roomUsers[$roomId])) {
+                            $key = array_search($userToken, $this->roomUsers[$roomId]);
+                            if ($key !== false) {
+                                unset($this->roomUsers[$roomId][$key]);
+                                $this->roomUsers[$roomId] = array_values($this->roomUsers[$roomId]);
+                            }
+                            
+                            if (empty($this->roomUsers[$roomId])) {
+                                unset($this->roomUsers[$roomId]);
+                                echo "房间 {$roomId} 已清空并删除\n";
+                            }
+                        }
+                        
+                        unset($this->userToRoom[$userToken]);
+                    }
+                    
+                    unset($this->lastMessageTime[$userToken]);
+                    
+                    $this->removeOnlineUser($userToken);
+                    
+                    echo "用户 {$userToken} 的所有连接已断开\n";
+                } else {
+                    echo "用户 {$userToken} 的一个连接断开，剩余 " . count($this->userConnections[$userToken]) . " 个连接\n";
+                }
+            }
+        }
+
+        echo "客户端 {$connection->id} 断开连接, 剩余连接数: " . count($this->clients) . "\n";
+    }
+
+    public function onError(TcpConnection $connection, int $code, string $msg): void
+    {
+        echo "连接错误 [{$code}]: {$msg}\n";
+        unset($this->clients[$connection->id]);
+
+        if (isset($connection->userId)) {
+            $userToken = $connection->userId;
+            unset($this->userConnections[$userToken]);
+            unset($this->userToRoom[$userToken]);
+            unset($this->lastMessageTime[$userToken]);
+        }
+    }
+
+    public function run(): void
+    {
+        $sslConfig = config('aliyun.websocket_ssl', []);
+        $isSslEnabled = $sslConfig['enable'] ?? false;
+        $port = 2346; 
+
+        echo "正在启动 WebSocket 服务器 (端口: {$port}, SSL: " . ($isSslEnabled ? '开启' : '关闭') . ")...\n";
+
+        $workerContext = [];
+        if ($isSslEnabled) {
+            $localCert = $sslConfig['local_cert'] ?? '';
+            $localPk = $sslConfig['local_pk'] ?? '';
+
+            if (!file_exists($localCert) || !file_exists($localPk)) {
+                echo "❌ [ERROR] 证书文件不存在！请检查 config/aliyun.php\n";
+            } else {
+                $workerContext = array(
+                    'ssl' => array(
+                        'local_cert'  => $localCert,
+                        'local_pk'    => $localPk,
+                        'verify_peer' => false,
+                    )
+                );
+                echo "✅ WSS (SSL) 模式已启用，证书加载成功\n";
+            }
+        }
+
+        $worker = new Worker("websocket://0.0.0.0:{$port}", $workerContext);
+        
+        if ($isSslEnabled) {
+            $worker->transport = 'ssl';
+        }
+
+        $worker->count = 1; 
+        $worker->name = 'ChatWebSocket';
+
+        $worker->onWorkerStart = [$this, 'onWorkerStart'];
+        $worker->onConnect = [$this, 'onConnect'];
+        $worker->onMessage = [$this, 'onMessage'];
+        $worker->onClose = [$this, 'onClose'];
+        $worker->onError = [$this, 'onError'];
+
+        Worker::runAll();
+    }
+}

@@ -343,6 +343,9 @@ class AiServer
     private function handleAiChat(TcpConnection $connection, string $message, ?int $roomId, string $userToken): void
     {
         echo "🤖 [服务端] 开始处理AI对话 - 用户: {$userToken}, 房间: {$roomId}\n";
+        echo "   🔗 [DEBUG] 当前连接ID: {$connection->id}\n";
+        echo "   👥 [DEBUG] userConnections 中的用户数: " . count($this->userConnections) . "\n";
+        echo "   📋 [DEBUG] userConnections keys: " . implode(', ', array_keys($this->userConnections)) . "\n";
         
         if ($this->aliyun === null) {
             try {
@@ -370,14 +373,18 @@ class AiServer
             ]
         ];
 
+        echo "   📢 [DEBUG] 广播用户消息到其他连接...\n";
         $this->sendToOtherUserConnections($userToken, $connection->id, $userMessageData);
         
         if ($roomId) {
+            echo "   📢 [DEBUG] 广播用户消息到房间 {$roomId}...\n";
             $this->broadcastToRoom($userMessageData, $roomId, $connection);
         }
 
         // 【关键】立即发送 start 信号
         echo "   📤 [服务端] 发送 AI start 信号...\n";
+        echo "   🔑 [DEBUG] start信号的userToken: {$userToken}\n";
+        
         $startSignal = [
             'type' => 'chat',
             'data' => [
@@ -392,7 +399,7 @@ class AiServer
         ];
         
         $this->sendToAllUserConnections($userToken, $startSignal);
-        echo "   ✅ [服务端] AI start 信号已发送\n";
+        echo "   ✅ [服务端] AI start 信号发送完成\n";
 
         // 获取聊天历史
         echo "   📚 [服务端] 获取聊天历史...\n";
@@ -428,6 +435,7 @@ class AiServer
         echo "   🏁 [服务端] AI响应完成 - 总chunk数: {$chunkCount}, 成功: " . ($success ? '是' : '否') . "\n";
 
         // 发送结束信号
+        echo "   📤 [服务端] 发送 AI end 信号...\n";
         $this->sendToAllUserConnections($userToken, [
             'type' => 'chat',
             'data' => [
@@ -529,20 +537,29 @@ class AiServer
 
     private function sendToAllUserConnections(string $userToken, array $data): void
     {
+        echo "   🔍 [DEBUG] sendToAllUserConnections 调用 - userToken: {$userToken}\n";
+        
         if (!isset($this->userConnections[$userToken])) {
+            echo "   ❌ [DEBUG] userConnections 中不存在该用户: {$userToken}\n";
+            echo "   📋 [DEBUG] 当前所有用户连接: " . implode(', ', array_keys($this->userConnections)) . "\n";
             return;
         }
 
+        echo "   ✅ [DEBUG] 找到用户连接，数量: " . count($this->userConnections[$userToken]) . "\n";
+        
         $sentCount = 0;
         foreach ($this->userConnections[$userToken] as $connId => $connection) {
             try {
+                echo "   📤 [DEBUG] 发送到连接 ID: {$connId}\n";
                 $this->sendToClient($connection, $data);
                 $sentCount++;
             } catch (\Exception $e) {
+                echo "   ❌ [DEBUG] 发送到连接 {$connId} 失败: " . $e->getMessage() . "\n";
                 unset($this->userConnections[$userToken][$connId]);
             }
         }
-
+        
+        echo "   📊 [DEBUG] 成功发送到 {$sentCount} 个连接\n";
     }
 
     private function sendToOtherUserConnections(string $userToken, int $excludeConnId, array $data): void

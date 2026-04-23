@@ -41,9 +41,9 @@ class Index
             ->toArray();
         
         return json([
-            'code' => 200,
+            'code' => count($history)>0?200:1,
             'msg' => 'success',
-            'data' => $history
+            'data' => json_decode(json_encode($history), true)
         ]);
     }
     

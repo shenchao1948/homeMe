@@ -779,8 +779,6 @@ function loadChatHistory() {
             page_size: 50
         },
         success: function(response) {
-            console.log('加载历史记录开始1:'+response.code);
-            console.log('加载历史记录开始2:'+response.data.length);
             if (response.code === 200 && response.data && response.data.length > 0) {
                 console.log('加载历史记录:', response.data.length, '条');
                 

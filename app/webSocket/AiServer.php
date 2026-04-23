@@ -83,21 +83,27 @@ class AiServer
     {
         $connection->lastMessageTime = time();
 
+        echo "📨 [服务端] 收到消息 - 连接ID: {$connection->id}, 数据长度: " . strlen($data) . "\n";
+
         try {
             $message = json_decode($data, true, 512, JSON_THROW_ON_ERROR);
 
             if (!is_array($message)) {
+                echo "❌ [服务端] 消息格式错误\n";
                 $this->sendErrorMessage($connection, 'Invalid message format');
                 return;
             }
 
+            echo "✅ [服务端] 消息解析成功, type: " . ($message['type'] ?? 'unknown') . "\n";
             $this->handleMessageType($connection, $message);
 
         } catch (\JsonException $e) {
+            echo "❌ [服务端] JSON解析错误: " . $e->getMessage() . "\n";
             $this->sendErrorMessage($connection, 'JSON decode error: ' . $e->getMessage());
         } catch (\Exception $e) {
+            echo "❌ [服务端] 处理消息异常: " . $e->getMessage() . "\n";
+            echo "   文件: " . $e->getFile() . ":" . $e->getLine() . "\n";
             $this->sendErrorMessage($connection, 'Server error: ' . $e->getMessage());
-            echo "处理消息异常: " . $e->getMessage() . "\n";
         }
     }
 
@@ -336,15 +342,21 @@ class AiServer
 
     private function handleAiChat(TcpConnection $connection, string $message, ?int $roomId, string $userToken): void
     {
+        echo "🤖 [服务端] 开始处理AI对话 - 用户: {$userToken}, 房间: {$roomId}\n";
+        
         if ($this->aliyun === null) {
             try {
+                echo "   [服务端] 初始化阿里云AI服务...\n";
                 $this->aliyun = new Aliyun();
+                echo "   ✅ [服务端] AI服务初始化成功\n";
             } catch (\Exception $e) {
+                echo "   ❌ [服务端] AI服务初始化失败: " . $e->getMessage() . "\n";
                 $this->sendErrorMessage($connection, 'AI服务初始化失败: ' . $e->getMessage());
                 return;
             }
         }
 
+        // 先发送用户消息给其他客户端
         $userMessageData = [
             'type' => 'chat',
             'data' => [
@@ -364,7 +376,9 @@ class AiServer
             $this->broadcastToRoom($userMessageData, $roomId, $connection);
         }
 
-        $this->sendToAllUserConnections($userToken, [
+        // 【关键】立即发送 start 信号
+        echo "   📤 [服务端] 发送 AI start 信号...\n";
+        $startSignal = [
             'type' => 'chat',
             'data' => [
                 'isStreaming' => true,
@@ -375,16 +389,27 @@ class AiServer
                 'is_ai' => true,
                 'status' => 'start'
             ]
-        ]);
+        ];
+        
+        $this->sendToAllUserConnections($userToken, $startSignal);
+        echo "   ✅ [服务端] AI start 信号已发送\n";
 
+        // 获取聊天历史
+        echo "   📚 [服务端] 获取聊天历史...\n";
         $contextMessages = $this->getRecentChatHistory($userToken, 20);
+        echo "   ✅ [服务端] 获取到 " . count($contextMessages) . " 条历史记录\n";
 
         $fullResponse = '';
         $chunkCount = 0;
 
+        echo "   🔄 [服务端] 开始调用阿里云AI API...\n";
         $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use ($userToken, $roomId, &$fullResponse, &$chunkCount) {
             $fullResponse .= $chunk;
             $chunkCount++;
+            
+            if ($chunkCount % 5 === 0) { // 每5个chunk打印一次日志
+                echo "   📊 [服务端] 已发送 {$chunkCount} 个内容块\n";
+            }
             
             $this->sendToAllUserConnections($userToken, [
                 'type' => 'chat',
@@ -400,6 +425,9 @@ class AiServer
             ]);
         });
 
+        echo "   🏁 [服务端] AI响应完成 - 总chunk数: {$chunkCount}, 成功: " . ($success ? '是' : '否') . "\n";
+
+        // 发送结束信号
         $this->sendToAllUserConnections($userToken, [
             'type' => 'chat',
             'data' => [
@@ -415,10 +443,12 @@ class AiServer
         ]);
 
         if ($success) {
+            echo "   💾 [服务端] 保存聊天历史...\n";
             $this->saveChatHistory($userToken, $message, $fullResponse, $roomId);
             $this->updateUserChatCount($userToken);
+            echo "   ✅ [服务端] AI对话处理完成\n";
         } else {
-            echo "❌ AI服务响应失败\n";
+            echo "   ❌ [服务端] AI服务响应失败\n";
             $this->sendErrorMessage($connection, 'AI服务响应失败');
         }
     }

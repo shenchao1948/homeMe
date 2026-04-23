@@ -127,10 +127,14 @@ function handleWebSocketOpen(event) {
 
 // WebSocket接收消息
 function handleWebSocketMessage(event) {
+    console.log('📥 [DEBUG] 收到原始WebSocket消息:', event.data.substring(0, 200));
+    
     try {
         const data = JSON.parse(event.data);
+        console.log('📦 [DEBUG] 解析后的消息:', data);
         handleParsedMessage(data);
     } catch (e) {
+        console.error('❌ [DEBUG] JSON解析失败:', e);
         // 如果不是JSON，可能是纯文本消息
         if (event.data && event.data.trim() !== '') {
             appendMessageToChat('bot', event.data, false);
@@ -775,6 +779,8 @@ function loadChatHistory() {
             page_size: 50
         },
         success: function(response) {
+            console.log('加载历史记录开始1:'+response.code);
+            console.log('加载历史记录开始2:'+response.data.length);
             if (response.code === 200 && response.data && response.data.length > 0) {
                 console.log('加载历史记录:', response.data.length, '条');
                 

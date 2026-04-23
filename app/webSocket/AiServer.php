@@ -47,13 +47,6 @@ class AiServer
     {
         echo "WebSocket服务器已在端口2346启动\n";
 
-        // 【关键修复】禁用Nagle算法，确保小包立即发送
-        foreach ($worker->connections as $connection) {
-            if (method_exists($connection, 'setTransport')) {
-                $connection->transport = 'tcp';
-            }
-        }
-
         Timer::add(self::PING_INTERVAL, function() use ($worker) {
             $currentTime = time();
             foreach ($worker->connections as $connection) {
@@ -78,18 +71,6 @@ class AiServer
 
     public function onConnect(TcpConnection $connection): void
     {
-        // 【关键修复】禁用Nagle算法，启用TCP_NODELAY，确保小包立即发送
-        if (function_exists('socket_import_stream') && method_exists($connection, 'getSocket')) {
-            try {
-                $socket = $connection->getSocket();
-                if ($socket) {
-                    socket_set_option($socket, SOL_TCP, TCP_NODELAY, 1);
-                }
-            } catch (\Exception $e) {
-                echo "设置TCP_NODELAY失败: " . $e->getMessage() . "\n";
-            }
-        }
-        
         $connection->lastMessageTime = time();
         $this->clients[$connection->id] = [
             "connection" => $connection,
@@ -405,17 +386,22 @@ class AiServer
 
         $fullResponse = '';
         $chunkCount = 0;
+        $startTime = microtime(true);
 
-        $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use ($userToken, $roomId, &$fullResponse, &$chunkCount) {
+        echo "🤖 [AI开始] 用户: {$userToken}, 消息长度: " . mb_strlen($message, 'UTF-8') . "\n";
+
+        $success = $this->aliyun->streamChatWithContext($message, $contextMessages, function($chunk) use ($userToken, $roomId, &$fullResponse, &$chunkCount, $startTime) {
             $fullResponse .= $chunk;
             $chunkCount++;
             
+            $elapsed = round(microtime(true) - $startTime, 2);
+            
             // 【调试日志】记录每个chunk的接收时间和内容
-            if ($chunkCount <= 3 || $chunkCount % 10 === 0) {
-                echo "📨 [AI Chunk #{$chunkCount}] 长度: " . mb_strlen($chunk, 'UTF-8') . ", 内容预览: " . mb_substr($chunk, 0, 30) . "\n";
+            if ($chunkCount <= 3 || $chunkCount % 5 === 0) {
+                echo "📨 [AI Chunk #{$chunkCount}] [{$elapsed}s] 长度: " . mb_strlen($chunk, 'UTF-8') . ", 内容预览: " . mb_substr($chunk, 0, 30) . "\n";
             }
             
-            $this->sendToAllUserConnections($userToken, [
+            $sendData = [
                 'type' => 'chat',
                 'data' => [
                     'isStreaming' => true,
@@ -426,11 +412,15 @@ class AiServer
                     'is_ai' => true,
                     'status' => 'streaming'
                 ]
-            ]);
+            ];
+            
+            $this->sendToAllUserConnections($userToken, $sendData);
         });
 
+        $totalTime = round(microtime(true) - $startTime, 2);
+        
         // 【调试日志】记录总chunk数和总响应时间
-        echo "✅ [AI完成] 总chunk数: {$chunkCount}, 总长度: " . mb_strlen($fullResponse, 'UTF-8') . "\n";
+        echo "✅ [AI完成] 总chunk数: {$chunkCount}, 总长度: " . mb_strlen($fullResponse, 'UTF-8') . ", 耗时: {$totalTime}s\n";
 
         // 发送结束信号
         $this->sendToAllUserConnections($userToken, [

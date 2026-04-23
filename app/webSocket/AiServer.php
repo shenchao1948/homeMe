@@ -47,6 +47,13 @@ class AiServer
     {
         echo "WebSocket服务器已在端口2346启动\n";
 
+        // 【关键修复】禁用Nagle算法，确保小包立即发送
+        foreach ($worker->connections as $connection) {
+            if (method_exists($connection, 'setTransport')) {
+                $connection->transport = 'tcp';
+            }
+        }
+
         Timer::add(self::PING_INTERVAL, function() use ($worker) {
             $currentTime = time();
             foreach ($worker->connections as $connection) {
@@ -71,6 +78,18 @@ class AiServer
 
     public function onConnect(TcpConnection $connection): void
     {
+        // 【关键修复】禁用Nagle算法，启用TCP_NODELAY，确保小包立即发送
+        if (function_exists('socket_import_stream') && method_exists($connection, 'getSocket')) {
+            try {
+                $socket = $connection->getSocket();
+                if ($socket) {
+                    socket_set_option($socket, SOL_TCP, TCP_NODELAY, 1);
+                }
+            } catch (\Exception $e) {
+                echo "设置TCP_NODELAY失败: " . $e->getMessage() . "\n";
+            }
+        }
+        
         $connection->lastMessageTime = time();
         $this->clients[$connection->id] = [
             "connection" => $connection,
@@ -391,6 +410,11 @@ class AiServer
             $fullResponse .= $chunk;
             $chunkCount++;
             
+            // 【调试日志】记录每个chunk的接收时间和内容
+            if ($chunkCount <= 3 || $chunkCount % 10 === 0) {
+                echo "📨 [AI Chunk #{$chunkCount}] 长度: " . mb_strlen($chunk, 'UTF-8') . ", 内容预览: " . mb_substr($chunk, 0, 30) . "\n";
+            }
+            
             $this->sendToAllUserConnections($userToken, [
                 'type' => 'chat',
                 'data' => [
@@ -404,6 +428,9 @@ class AiServer
                 ]
             ]);
         });
+
+        // 【调试日志】记录总chunk数和总响应时间
+        echo "✅ [AI完成] 总chunk数: {$chunkCount}, 总长度: " . mb_strlen($fullResponse, 'UTF-8') . "\n";
 
         // 发送结束信号
         $this->sendToAllUserConnections($userToken, [
@@ -575,7 +602,21 @@ class AiServer
             $data = $this->ensureUtf8Encoding($data);
             
             $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+            
+            // 【关键修复】添加调试日志，确认流式数据发送时机
+            if (isset($data['data']['isStreaming']) && $data['data']['isStreaming']) {
+                $status = $data['data']['status'] ?? 'unknown';
+                $contentLen = mb_strlen($data['data']['content'] ?? '', 'UTF-8');
+                echo "📤 [流式发送] status={$status}, content_len={$contentLen}, conn_id={$connection->id}\n";
+            }
+            
             $connection->send($json);
+            
+            // 【关键修复】强制刷新输出缓冲（如果存在）
+            if (function_exists('ob_flush') && function_exists('flush')) {
+                @ob_flush();
+                @flush();
+            }
         } catch (\JsonException $e) {
             echo "JSON编码错误: " . $e->getMessage() . "\n";
             echo "原始数据: " . print_r($data, true) . "\n";

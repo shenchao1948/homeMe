@@ -549,14 +549,6 @@ function sendMessage() {
     try {
         state.ws.send(JSON.stringify(chatMessage));
         
-        // 【新增】设置超时检测，如果10秒内没有收到AI响应，隐藏思考提示
-        setTimeout(() => {
-            if (state.isSending && !state.hasReceivedFirstChunk) {
-                clearThinkingMessage();
-                showSystemMessage("AI响应超时，请重试", "warning");
-            }
-        }, 10000);
-        
         // 设置超时保护，防止服务器无响应导致按钮一直禁用
         setTimeout(() => {
             if (state.isSending) {
@@ -623,8 +615,8 @@ function startTypewriter() {
         chatBox.scrollTop(chatBox.get(0).scrollHeight);
     }
     
-    // 设置下一个字符的延迟（30-80ms随机，模拟真实打字速度）
-    const delay = Math.random() * 50 + 30;
+    // 【优化】加快打字速度，从30-80ms改为5-15ms，更接近实时流式效果
+    const delay = Math.random() * 10 + 5;
     state.typewriterTimer = setTimeout(startTypewriter, delay);
 }
 

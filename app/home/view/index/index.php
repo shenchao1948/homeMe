@@ -43,7 +43,13 @@
                     <!-- 聊天头部 -->
                     <div id="chatHeader" class="bg-gradient-to-r from-indigo-500 to-purple-600 p-4 text-white">
                         <div class="flex items-center justify-between">
-                            <h2 class="text-lg font-semibold">实时对话</h2>
+                            <div class="flex items-center space-x-3">
+                                <h2 class="text-lg font-semibold">实时对话</h2>
+                                <button id="enterMainPageBtn" class="ml-2 px-3 py-1.5 bg-white bg-opacity-20 hover:bg-opacity-30 rounded-lg text-sm font-medium transition-all duration-300 flex items-center space-x-1 border border-white border-opacity-30 hover:border-opacity-50">
+                                    <i class="fas fa-arrow-right"></i>
+                                    <span>进入主页</span>
+                                </button>
+                            </div>
                             <div class="flex items-center space-x-2">
                                 <span class="flex w-3 h-3">
                                     <span class="animate-ping absolute inline-flex h-3 w-3 rounded-full bg-green-400 opacity-75"></span>
@@ -102,19 +108,6 @@
                                     <i class="fas fa-trash-alt"></i>
                                 </button>
                             </div>
-                        </div>
-                        
-                        <!-- 加载状态 -->
-                        <div id="loadingIndicator" class="hidden mt-4 flex items-center justify-center p-3 bg-blue-50 rounded-xl">
-                            <div class="typing-indicator flex space-x-1 text-indigo-500">
-                                <span class="w-2 h-2 bg-current rounded-full"></span>
-                                <span class="w-2 h-2 bg-current rounded-full"></span>
-                                <span class="w-2 h-2 bg-current rounded-full"></span>
-                            </div>
-                            <span class="ml-3 text-indigo-500 font-medium">AI正在思考中...</span>
-                            <button id="cancelRequest" class="ml-4 text-red-500 hover:text-red-700">
-                                <i class="fas fa-times-circle"></i> 取消
-                            </button>
                         </div>
                     </div>
                 </div>

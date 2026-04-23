@@ -91,8 +91,8 @@ body {
     display: flex;
     width: 100%;
     max-width: 1600px;
-    min-height: calc(100vh - 80px); /* 【修改】使用 min-height 而不是 height */
-    height: auto; /* 【修改】自动高度 */
+    min-height: calc(100vh - 80px);
+    height: auto;
     gap: 40px;
     align-items: center;
 }
@@ -697,10 +697,6 @@ section {
     color: #1f2937 !important;
 }
 
-#chatContainer * {
-    color: inherit;
-}
-
 /* 消息区域背景 */
 #chatMessages {
     background: #f9fafb !important;
@@ -1097,7 +1093,7 @@ footer p {
     }
 
     .projects-track .project-card-link {
-        width: calc((100% - 30px) / 2); /* 平板端2个：减去1个gap(30px)后除以2 */
+        width: calc((100% - 30px) / 2);
     }
 
     .initial-container {
@@ -1112,10 +1108,10 @@ footer p {
     }
 
     .initial-right-panel {
-        order: 2;
+        order: 1;
         flex: 0 0 auto;
         height: auto;
-        padding: 40px 0;
+        padding: 20px 0;
     }
 
     .initial-left-panel #chatContainer {
@@ -1151,7 +1147,7 @@ footer p {
     }
 
     .projects-track .project-card-link {
-        width: 100%; /* 移动端1个 */
+        width: 100%;
     }
 
     .carousel-btn {
@@ -1163,9 +1159,9 @@ footer p {
     /* 【关键修复】小屏幕初始界面优化 */
     #initial-screen {
         padding: 20px;
-        align-items: flex-start; /* 【修改】顶部对齐，允许滚动 */
-        padding-top: 60px;
-        overflow-y: auto; /* 【关键】允许垂直滚动 */
+        align-items: flex-start;
+        padding-top: 30px;
+        overflow-y: auto;
     }
 
     .initial-container {
@@ -1182,22 +1178,17 @@ footer p {
         height: auto;
     }
 
+    /* 【关键修改】移动端隐藏右侧大按钮 */
     .initial-right-panel {
-        order: 2;
-        width: 100%;
-        flex: 0 0 auto;
-        height: auto;
-        padding: 30px 0;
+        display: none;
+    }
+
+    .desktop-only {
+        display: none !important;
     }
 
     .initial-left-panel #chatContainer {
         max-width: 100%;
-    }
-
-    .enter-button {
-        padding: 18px 40px;
-        font-size: 1.3rem;
-        letter-spacing: 2px;
     }
 
     .nav-toggle {
@@ -1266,4 +1257,9 @@ footer p {
 ::selection {
     background: rgba(0, 240, 255, 0.3);
     color: white;
+}
+
+/* 桌面端显示，移动端隐藏 */
+.desktop-only {
+    display: block;
 }

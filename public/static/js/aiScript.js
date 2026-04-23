@@ -541,9 +541,6 @@ function sendMessage() {
     // 清空输入框
     $('#messageInput').val('').trigger('input');
     
-    // 显示加载状态
-    showLoadingIndicator(true);
-    
     // 更新状态
     state.isSending = true;
     updateSendButtonState();
@@ -577,14 +574,12 @@ function sendMessage() {
 
 // 处理发送消息成功
 function handleSendMessageSuccess() {
-    showLoadingIndicator(false);
     state.isSending = false;
     updateSendButtonState();
 }
 
 // 处理发送消息错误
 function handleSendMessageError(errorMessage) {
-    showLoadingIndicator(false);
     state.isSending = false;
     updateSendButtonState();
     showError(errorMessage || "发送失败，请重试");
@@ -692,14 +687,11 @@ function showSystemMessage(message, type = 'info') {
     }
 }
 
-// 显示加载指示器
+// 显示加载指示器（已弃用：改用气泡形式的思考提示）
 function showLoadingIndicator(show = true) {
-    const loadingIndicator = $('#loadingIndicator');
-    if (show) {
-        loadingIndicator.removeClass('hidden');
-    } else {
-        loadingIndicator.addClass('hidden');
-    }
+    // 此函数已不再使用，因为改用气泡形式的"AI正在努力思考..."提示
+    // 保留此函数以备将来可能需要
+    console.log('[Deprecated] showLoadingIndicator called');
 }
 
 // 取消请求

@@ -112,30 +112,64 @@ function initParticles() {
     }
 
     animate();
+    console.log('✨ 粒子背景已初始化');
 }
 
 // 绑定进入按钮事件
 function bindEnterButton() {
-    $('.enter-button').on('click', function() {
-        console.log('✨ 用户点击进入主页面');
-
-        // 隐藏初始屏幕
-        $('#initial-screen').addClass('hidden');
-
-        // 将AI助手移动到主内容区域
-        moveAIAssistantToMainContent();
-
-        // 显示主内容
-        setTimeout(() => {
-            $('#main-content').addClass('visible');
-            // 【关键】启用页面滚动
-        }, 400);
-
-        // 触发一次滚动事件以更新导航状态
-        setTimeout(() => {
-            $(window).trigger('scroll');
-        }, 1200);
+    // 使用事件委托，确保动态生成的元素也能响应
+    $(document).on('click touchend', '.enter-button, #enterMainPageBtn', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // 对于touchend事件，防止与click事件重复触发
+        if (e.type === 'touchend') {
+            // 标记已处理，防止click再次触发
+            $(this).data('touched', true);
+            setTimeout(() => {
+                $(this).removeData('touched');
+            }, 500);
+        }
+        
+        // 如果已经通过touchend处理过，则忽略click事件
+        if ($(this).data('touched') && e.type === 'click') {
+            return;
+        }
+        
+        console.log('🎯 检测到进入主页按钮点击 (' + e.type + ')');
+        enterMainPage();
     });
+    
+    console.log('✅ 进入主页按钮事件已绑定（支持触摸）');
+}
+
+// 进入主页面函数
+function enterMainPage() {
+    console.log('✨ 用户点击进入主页面');
+
+    // 防止重复点击
+    if ($('#initial-screen').hasClass('hidden')) {
+        console.log('⚠️ 已经进入主页面，忽略重复点击');
+        return;
+    }
+
+    // 隐藏初始屏幕
+    $('#initial-screen').addClass('hidden');
+
+    // 将AI助手移动到主内容区域
+    moveAIAssistantToMainContent();
+
+    // 显示主内容
+    setTimeout(() => {
+        $('#main-content').addClass('visible');
+        // 【关键】启用页面滚动
+        $('body').css('overflow', 'auto');
+    }, 400);
+
+    // 触发一次滚动事件以更新导航状态
+    setTimeout(() => {
+        $(window).trigger('scroll');
+    }, 1200);
 }
 
 // 将AI助手移动到主内容区域
@@ -593,7 +627,5 @@ function bindProjectCardClicks() {
     });
 }
 
-// 在文档就绪时绑定项目点击事件
-$(document).ready(function() {
-    bindProjectCardClicks();
-});
+// 在主文档就绪时绑定项目点击事件
+bindProjectCardClicks();

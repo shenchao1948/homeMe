@@ -199,12 +199,16 @@ function handleChatMessage(messageData) {
         if (messageData.isStreaming) {
             if (messageData.status === 'start') {
                 // AI开始响应，创建显示"AI正在努力思考..."的消息气泡
+                // 【修复】确保每次都会创建新的思考提示气泡
+                clearThinkingMessage(); // 先清除可能存在的旧思考提示
                 appendMessageToChat('bot', 'AI正在努力思考...', false, true, true);
+                console.log('🤖 [DEBUG] 显示AI思考提示');
             } else if (messageData.status === 'streaming') {
                 // 流式输出中，将内容加入打字机队列
                 if (messageData.content && messageData.content.length > 0) {
                     // 如果是第一次收到内容，清除"思考中"提示
                     if (!state.hasReceivedFirstChunk) {
+                        console.log('✨ [DEBUG] 收到第一个内容块，清除思考提示');
                         clearThinkingMessage();
                         state.hasReceivedFirstChunk = true;
                     }
@@ -216,6 +220,7 @@ function handleChatMessage(messageData) {
                 handleSendMessageSuccess();
                 // 重置标志
                 state.hasReceivedFirstChunk = false;
+                console.log('✅ [DEBUG] AI响应结束，重置标志');
             }
         } else {
             // 非流式AI消息，直接显示
@@ -535,6 +540,9 @@ function sendMessage() {
     // 保存最后一条用户消息（用于重试）
     state.lastUserMessage = message;
     
+    // 【修复】发送消息前重置标志，确保下次AI响应能显示思考提示
+    state.hasReceivedFirstChunk = false;
+    
     // 显示用户消息
     appendMessageToChat('user', message);
     
@@ -559,6 +567,7 @@ function sendMessage() {
     // 发送消息
     try {
         state.ws.send(JSON.stringify(chatMessage));
+        console.log('📤 [DEBUG] 消息已发送，等待AI响应...');
         
         // 设置超时保护，防止服务器无响应导致按钮一直禁用
         setTimeout(() => {
@@ -759,11 +768,17 @@ function loadChatHistory() {
                 // 没有历史记录，显示欢迎消息
                 appendMessageToChat('bot', "您好！我是沈超的应聘助手，随时为您解答招聘问题。请问您有什么想问沈超的吗？");
             }
+            
+            // 【修复】无论是否有历史记录，都要重置标志，确保首次AI响应能正确显示思考提示
+            state.hasReceivedFirstChunk = false;
         },
         error: function(xhr, status, error) {
             console.error('加载聊天历史失败:', error);
             // 出错时也显示欢迎消息，避免页面空白
             appendMessageToChat('bot', "您好！我是沈超的应聘助手，随时为您解答招聘问题。请问您有什么想问沈超的吗？");
+            
+            // 【修复】出错时也要重置标志
+            state.hasReceivedFirstChunk = false;
         }
     });
 }
@@ -787,11 +802,14 @@ function clearThinkingMessage() {
     
     if (lastBotMessage.length > 0) {
         const contentElement = lastBotMessage.find('p');
-        const currentText = contentElement.text();
+        const currentText = contentElement.text().trim();
         
-        // 如果当前内容是"AI正在努力思考..."，则清空
-        if (currentText.includes('AI正在努力思考')) {
+        // 【修复】如果当前内容是"AI正在努力思考..."或包含"思考"关键字，则清空
+        if (currentText.includes('思考') || currentText.includes('努力')) {
+            console.log('🧹 [DEBUG] 清除思考提示，当前内容:', currentText);
             contentElement.empty();
         }
+    } else {
+        console.warn('⚠️ [DEBUG] 未找到bot消息气泡，无法清除思考提示');
     }
 }

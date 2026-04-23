@@ -40,10 +40,13 @@ class Index
             ->order("id","asc")
             ->toArray();
         
+        // 【修复】确保返回的是标准索引数组，而不是对象格式
+        $history = array_values($history);
+        
         return json([
             'code' => count($history)>0?200:1,
             'msg' => 'success',
-            'data' => json_decode(json_encode($history), true)
+            'data' => $history
         ]);
     }
     

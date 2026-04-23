@@ -3,11 +3,12 @@ declare (strict_types = 1);
 
 namespace app\home\controller;
 
+use app\BaseController;
 use app\home\model\RoomCommons;
 use app\home\model\User;
 use think\Request;
 
-class Index
+class Index extends BaseController
 {
     public function index()
     {

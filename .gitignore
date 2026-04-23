@@ -11,5 +11,5 @@ Thumbs.db
 /.buildpath
 /.project
 
-aliyun.php
-database.php
+config/aliyun.php
+config/database.php

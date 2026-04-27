@@ -258,9 +258,13 @@ function bindNavigation() {
 
     // 导航链接点击
     $('.nav-link').on('click', function(e) {
-        e.preventDefault();
-
-        const target = $(this.getAttribute('href'));
+        let target = $(this).attr('href');
+        if(target.indexOf("#")>-1){
+            e.preventDefault();
+            target = $(target);
+        }else{
+            return true;
+        }
         if (target.length) {
             $('html, body').stop().animate({
                 scrollTop: target.offset().top - 80
